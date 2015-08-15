@@ -19,7 +19,6 @@
 #include "python-tg.h"
 
 extern struct tgl_state *TLS;
-
 // TGL Python Exceptions
 extern PyObject *TglError;
 extern PyObject *PeerError;
@@ -375,23 +374,58 @@ static PyMemberDef tgl_Peer_members[] = {
 static PyObject *
 tgl_Peer_send_msg (tgl_Peer *self, PyObject *args, PyObject *kwargs)
 {
-  static char *kwlist[] = {"message", "callback", NULL};
+  static char *kwlist[] = {"message", "callback", "preview", "reply", NULL};
 
   char *message;
+  int preview = -1;
+  int reply = 0;
   PyObject *callback = NULL;
 
-  if(PyArg_ParseTupleAndKeywords(args, kwargs, "s|O", kwlist, &message, &callback)) {
+  if(PyArg_ParseTupleAndKeywords(args, kwargs, "s|Opi", kwlist, &message, &callback, &preview, &reply)) {
+    PyObject *api_call;
+    PyObject *flags;
+
+    flags = Py_BuildValue("(ii)", preview, reply);
+
+
+    if(callback)
+      api_call = Py_BuildValue("OsOO", (PyObject*) self, message, callback, flags);
+    else
+      api_call = Py_BuildValue("OsOO", (PyObject*) self, message, Py_None, flags);
+
+    Py_INCREF(Py_None);
+    Py_XINCREF(api_call);
+    Py_XINCREF(flags);
+
+    return py_send_msg(Py_None, api_call);
+  } else {
+    PyErr_Print();
+    Py_XINCREF(Py_False);
+    return Py_False;
+  }
+
+}
+
+static PyObject *
+tgl_Peer_fwd_msg (tgl_Peer *self, PyObject *args, PyObject *kwargs)
+{
+  static char *kwlist[] = {"callback", NULL};
+
+  int fwd_id = 0;
+  PyObject *callback = NULL;
+
+  if(PyArg_ParseTupleAndKeywords(args, kwargs, "i|O", kwlist, &fwd_id, &callback)) {
     PyObject *api_call;
 
     if(callback)
-      api_call = Py_BuildValue("OsO", (PyObject*) self, message, callback);
+      api_call = Py_BuildValue("OiO", (PyObject*) self, fwd_id, callback);
     else
-      api_call = Py_BuildValue("Os", (PyObject*) self, message);
+      api_call = Py_BuildValue("Oi", (PyObject*) self, fwd_id);
 
     Py_INCREF(Py_None);
     Py_XINCREF(api_call);
 
-    return py_send_msg(Py_None, api_call);
+    return py_fwd(Py_None, api_call);
   } else {
     PyErr_Print();
     Py_XINCREF(Py_False);
@@ -926,6 +960,7 @@ static PyMethodDef tgl_Peer_methods[] = {
   {"send_contact",      (PyCFunction)tgl_Peer_send_contact, METH_VARARGS | METH_KEYWORDS, ""},
   {"send_location",     (PyCFunction)tgl_Peer_send_location, METH_VARARGS | METH_KEYWORDS, ""},
   {"mark_read",         (PyCFunction)tgl_Peer_mark_read, METH_VARARGS | METH_KEYWORDS, ""},
+  {"fwd_msg",           (PyCFunction)tgl_Peer_fwd_msg, METH_VARARGS | METH_KEYWORDS, ""},
   {NULL}  /* Sentinel */
 };
 
@@ -937,7 +972,10 @@ tgl_Peer_repr(tgl_Peer *self)
 
   switch(self->peer->id.type) {
     case TGL_PEER_USER:
-      ret = PyUnicode_FromFormat("<tgl.Peer: type=user, id=%ld, username=%R, name=%R, first_name=%R, last_name=%R, phone=%R>",
+#if PY_VERSION_HEX < 0x02070900
+       ret = PyUnicode_FromFormat("<tgl.Peer: id=%ld>", self->peer->id.id);
+#else
+       ret = PyUnicode_FromFormat("<tgl.Peer: type=user, id=%ld, username=%R, name=%R, first_name=%R, last_name=%R, phone=%R>",
                                   self->peer->id.id,
                                   PyObject_GetAttrString((PyObject*)self, "username"),
                                   PyObject_GetAttrString((PyObject*)self, "name"),
@@ -945,6 +983,7 @@ tgl_Peer_repr(tgl_Peer *self)
                                   PyObject_GetAttrString((PyObject*)self, "last_name"),
                                   PyObject_GetAttrString((PyObject*)self, "phone")
             );
+#endif
       break;
     case TGL_PEER_CHAT:
       ret = PyUnicode_FromFormat("<tgl.Peer: type=chat, id=%ld, name=%s>",
@@ -962,6 +1001,44 @@ tgl_Peer_repr(tgl_Peer *self)
   return ret;
 }
 
+int
+tgl_Peer_hash(PyObject *self)
+{
+  return PyObject_Hash(PyObject_GetAttrString(self, "id"));
+}
+
+PyObject *
+tgl_Peer_RichCompare(PyObject *self, PyObject *other, int cmp)
+{
+  PyObject *result = NULL;
+
+  if(!PyObject_TypeCheck(other, &tgl_PeerType)) {
+    result = Py_False;
+  } else {
+    if(((tgl_Peer*)self)->peer == NULL ||
+       ((tgl_Peer*)other)->peer == NULL) {
+      result = Py_False; // If either object is not properly instantiated, compare is false
+    } else {
+      switch (cmp) {
+      case Py_EQ:
+        result = ((tgl_Peer*)self)->peer->id.id == ((tgl_Peer*)other)->peer->id.id ? Py_True : Py_False;
+        break;
+      case Py_NE:
+        result = ((tgl_Peer*)self)->peer->id.id == ((tgl_Peer*)other)->peer->id.id ? Py_False : Py_True;
+        break;
+      case Py_LE:
+      case Py_GE:
+      case Py_GT:
+      case Py_LT:
+      default:
+        return Py_INCREF(Py_NotImplemented), Py_NotImplemented;
+      }
+    }
+  }
+  Py_XINCREF(result);
+  return result;
+}
+
 
 PyTypeObject tgl_PeerType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -977,7 +1054,7 @@ PyTypeObject tgl_PeerType = {
     0,                            /* tp_as_number */
     0,                            /* tp_as_sequence */
     0,                            /* tp_as_mapping */
-    0,                            /* tp_hash  */
+    (hashfunc)tgl_Peer_hash,      /* tp_hash  */
     0,                            /* tp_call */
     0,                            /* tp_str */
     0,                            /* tp_getattro */
@@ -987,7 +1064,7 @@ PyTypeObject tgl_PeerType = {
     "tgl Peer",                   /* tp_doc */
     0,                            /* tp_traverse */
     0,                            /* tp_clear */
-    0,                            /* tp_richcompare */
+    (richcmpfunc)tgl_Peer_RichCompare, /* tp_richcompare */
     0,                            /* tp_weaklistoffset */
     0,                            /* tp_iter */
     0,                            /* tp_iternext */
@@ -1106,6 +1183,17 @@ tgl_Msg_getservice (tgl_Msg *self, void *closure)
   return ret;
 }
 
+static PyObject *
+tgl_Msg_getaction (tgl_Msg *self, void *closure)
+{
+  PyObject *ret;
+
+  ret = PyLong_FromLong(self->msg->action.type);
+
+  Py_XINCREF(ret);
+  return ret;
+}
+
 
 static PyObject *
 tgl_Msg_getsrc (tgl_Msg *self, void *closure)
@@ -1164,6 +1252,8 @@ tgl_Msg_gettext (tgl_Msg *self, void *closure)
   Py_XINCREF(ret);
   return ret;
 }
+
+
 
 static PyObject *
 tgl_Msg_getmedia (tgl_Msg *self, void *closure)
@@ -1312,11 +1402,62 @@ tgl_Msg_getreply_id (tgl_Msg *self, void *closure)
   return ret;
 }
 
+// All load methods are implemented the same, just alias load_document
+static PyObject *
+tgl_Msg_load_document (tgl_Msg *self, PyObject *args, PyObject *kwargs)
+{
+  static char *kwlist[] = {"callback", NULL};
+
+  PyObject *callback = NULL;
+
+  if(PyArg_ParseTupleAndKeywords(args, kwargs, "O", kwlist, &callback)) {
+    PyObject *api_call;
+
+    api_call = Py_BuildValue("OO", (PyObject*) self, callback);
+
+    Py_INCREF(Py_None);
+    Py_XINCREF(api_call);
+
+    return py_load_document(Py_None, api_call);
+  } else {
+    PyErr_Print();
+    Py_XINCREF(Py_False);
+    return Py_False;
+  }
+
+}
+
+static PyObject *
+tgl_Msg_load_document_thumb (tgl_Msg *self, PyObject *args, PyObject *kwargs)
+{
+  static char *kwlist[] = {"callback", NULL};
+
+  PyObject *callback = NULL;
+
+  if(PyArg_ParseTupleAndKeywords(args, kwargs, "O", kwlist, &callback)) {
+    PyObject *api_call;
+
+    api_call = Py_BuildValue("OO", (PyObject*) self, callback);
+
+    Py_INCREF(Py_None);
+    Py_XINCREF(api_call);
+
+    return py_load_document_thumb(Py_None, api_call);
+  } else {
+    PyErr_Print();
+    Py_XINCREF(Py_False);
+    return Py_False;
+  }
+
+}
+
 static PyObject *
 tgl_Msg_repr(tgl_Msg *self)
 {
   PyObject *ret;
-
+#if PY_VERSION_HEX < 0x02070900
+  ret = PyUnicode_FromFormat("<tgl.Msg id=%ld>", self->msg->id);
+#else
   ret = PyUnicode_FromFormat("<tgl.Msg id=%ld, flags=%d, mention=%R, out=%R, unread=%R, service=%R, src=%R, "
                              "dest=%R, text=%R, media=%R, date=%R, fwd_src=%R, fwd_date=%R, reply_id=%R, reply=%R>",
                              self->msg->id, self->msg->flags,
@@ -1334,7 +1475,7 @@ tgl_Msg_repr(tgl_Msg *self)
                              PyObject_GetAttrString((PyObject*)self, "reply_id"),
                              PyObject_GetAttrString((PyObject*)self, "reply")
         );
-
+#endif
   return ret;
 }
 
@@ -1355,6 +1496,7 @@ static PyGetSetDef tgl_Msg_getseters[] = {
   {"fwd_date", (getter)tgl_Msg_getfwd_date, NULL, "", NULL},
   {"reply", (getter)tgl_Msg_getreply, NULL, "", NULL},
   {"reply_id", (getter)tgl_Msg_getreply_id, NULL, "", NULL},
+  {"action", (getter)tgl_Msg_getaction, NULL, "", NULL},
   {NULL}  /* Sentinel */
 };
 
@@ -1365,6 +1507,12 @@ static PyMemberDef tgl_Msg_members[] = {
 
 
 static PyMethodDef tgl_Msg_methods[] = {
+  {"load_document", (PyCFunction)tgl_Msg_load_document, METH_VARARGS | METH_KEYWORDS, ""},
+  {"load_photo", (PyCFunction)tgl_Msg_load_document, METH_VARARGS | METH_KEYWORDS, ""},
+  {"load_audio", (PyCFunction)tgl_Msg_load_document, METH_VARARGS | METH_KEYWORDS, ""},
+  {"load_video", (PyCFunction)tgl_Msg_load_document, METH_VARARGS | METH_KEYWORDS, ""},
+  {"load_document_thumb", (PyCFunction)tgl_Msg_load_document_thumb, METH_VARARGS | METH_KEYWORDS, ""},
+  {"load_video_thumb", (PyCFunction)tgl_Msg_load_document_thumb, METH_VARARGS | METH_KEYWORDS, ""},
   {NULL}  /* Sentinel */
 };
 

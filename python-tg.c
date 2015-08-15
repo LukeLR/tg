@@ -105,6 +105,7 @@ PyObject *_py_new_msg;
 PyObject *_py_secret_chat_update;
 PyObject *_py_user_update;
 PyObject *_py_chat_update;
+PyObject *_py_on_loop;
 
 PyObject* get_peer (tgl_peer_id_t id, tgl_peer_t *P);
 
@@ -390,6 +391,27 @@ void py_chat_update (struct tgl_chat *C, unsigned flags) {
   Py_XDECREF(result);
 }
 
+void py_on_loop () {
+  if (!python_loaded) { return; }
+
+  PyObject *result;
+
+  if(_py_on_loop == NULL) {
+    logprintf("Callback not set for on_chat_update");
+    return;
+  }
+
+  result = PyEval_CallObject(_py_on_loop, Py_BuildValue("()"));
+
+  if(result == NULL)
+    PyErr_Print();
+  else if(PyUnicode_Check(result))
+    logprintf ("python: %s\n", PyBytes_AsString(PyUnicode_AsASCIIString(result)));
+
+  Py_XDECREF(result);
+}
+
+
 ////extern tgl_peer_t *Peers[];
 ////extern int peer_num;
 //
@@ -445,7 +467,8 @@ enum py_query_type {
   pq_status_online,
   pq_status_offline,
   pq_send_location,
-  pq_extf
+  pq_extf,
+  pq_import_chat_link
 };
 
 void py_empty_cb (struct tgl_state *TLSR, void *cb_extra, int success) {
@@ -737,6 +760,10 @@ void py_str_cb (struct tgl_state *TLSR, void *cb_extra, int success, const char 
 
 void py_do_all (void) {
   int p = 0;
+
+  // ping the python thread that we're doing the loop
+  py_on_loop();
+
   while (p < pos) {
     assert (p + 2 <= pos);
 
@@ -744,17 +771,25 @@ void py_do_all (void) {
     PyObject *args = (PyObject *)py_ptr[p ++];
 
     const char *str, *str1, *str2, *str3;
-    
+
+    int preview = 0;
+    int reply_id = 0;
+    unsigned long long flags = 0;
+
     Py_ssize_t i;
     tgl_user_id_t *ids;
+
+    struct tgl_message *M;
 
     int len, len1, len2, len3;
     int limit, offset;
     long msg_id = 0;
+
     PyObject *pyObj1 = NULL;
     PyObject *pyObj2 = NULL;
     PyObject *cb_extra = NULL;
 
+    PyObject *msg = NULL;
     PyObject *peer = NULL;
     PyObject *peer1 = NULL;
 
@@ -772,10 +807,21 @@ void py_do_all (void) {
         PyErr_Print();
       break;
     case pq_msg:
-      if(PyArg_ParseTuple(args, "O!s#|O", &tgl_PeerType, &peer, &str, &len, &cb_extra))
-        tgl_do_send_message (TLS, PY_PEER_ID(peer), str, len, 0, py_msg_cb, cb_extra);
-      else
+      if(PyArg_ParseTuple(args, "O!s#|OO", &tgl_PeerType, &peer, &str, &len, &cb_extra, &pyObj1)) {
+        if(pyObj1 && PyArg_ParseTuple(pyObj1, "ii", &preview, &reply_id)) {
+          if(preview != -1) {
+            if(preview)
+              flags |= TGL_SEND_MSG_FLAG_ENABLE_PREVIEW;
+            else
+              flags |= TGL_SEND_MSG_FLAG_DISABLE_PREVIEW;
+          }
+          flags |= TGL_SEND_MSG_FLAG_REPLY (reply_id);
+        }
+        tgl_do_send_message (TLS, PY_PEER_ID(peer), str, len, flags, NULL, py_msg_cb, cb_extra);
+      } else
         PyErr_Print();
+
+      Py_XDECREF(pyObj1);
       break;
     case pq_send_typing:
       if(PyArg_ParseTuple(args, "O!|O", &tgl_PeerType, &peer, &cb_extra))
@@ -837,33 +883,40 @@ void py_do_all (void) {
       else
         PyErr_Print();
       break;
-/*  case pq_load_photo:
+    case pq_load_photo:
     case pq_load_video:
     case pq_load_audio:
     case pq_load_document:
-      M = py_ptr[p + 1];
-      if (!M || (M->media.type != tgl_message_media_photo && M->media.type != tgl_message_media_photo_encr && M->media.type != tgl_message_media_document && M->media.type != tgl_message_media_document_encr)) {
-        py_file_cb (TLS, py_ptr[p], 0, 0);
-      } else {
-        , limit, offse, limit, offsettif (M->media.type == tgl_message_media_photo) {
-          tgl_do_load_photo (TLS, &M->media.photo, py_file_cb, py_ptr[p]);
-        } else if (M->media.type == tgl_message_media_document) {
-          tgl_do_load_document (TLS, &M->media.document, py_file_cb, py_ptr[p]);
+      if(PyArg_ParseTuple(args, "O!O", &tgl_MsgType, &msg, &cb_extra))
+      {
+        M = ((tgl_Msg*)msg)->msg;
+        if (!M || (M->media.type != tgl_message_media_photo && M->media.type != tgl_message_media_document && M->media.type != tgl_message_media_document_encr)) {
+          py_file_cb (TLS, cb_extra, 0, 0);
         } else {
-          tgl_do_load_encr_document (TLS, &M->media.encr_document, py_file_cb, py_ptr[p]);
+          if (M->media.type == tgl_message_media_photo) {
+            assert (M->media.photo);
+            tgl_do_load_photo (TLS, M->media.photo, py_file_cb, cb_extra);
+          } else if (M->media.type == tgl_message_media_document) {
+            tgl_do_load_document (TLS, M->media.document, py_file_cb, cb_extra);
+          } else {
+            tgl_do_load_encr_document (TLS, M->media.encr_document, py_file_cb, cb_extra);
+          }
         }
       }
       break;
     case pq_load_video_thumb:
     case pq_load_document_thumb:
-      M = py_ptr[p + 1];
-      if (!M || (M->media.type != tgl_message_media_document)) {
-        py_file_cb (TLS, py_ptr[p], 0, 0);
-      } else {
-        tgl_do_load_document_thumb (TLS, &M->media.document, py_file_cb, py_ptr[p]);
+      if(PyArg_ParseTuple(args, "O!O", &tgl_MsgType, &msg, &cb_extra))
+      {
+        M = ((tgl_Msg*)msg)->msg;
+        if (!M || (M->media.type != tgl_message_media_document)) {
+          py_file_cb (TLS, cb_extra, 0, 0);
+        } else {
+          tgl_do_load_document_thumb (TLS, M->media.document, py_file_cb, cb_extra);
+        }
       }
       break;
-*/
+
     case pq_fwd:
       if(PyArg_ParseTuple(args, "O!l|O", &tgl_PeerType, &peer, &msg_id, &cb_extra))
         tgl_do_forward_message (TLS, PY_PEER_ID(peer), msg_id, 0, py_msg_cb, cb_extra);
@@ -1010,7 +1063,13 @@ void py_do_all (void) {
       break;
     case pq_extf:
       if(PyArg_ParseTuple(args, "s#|O", &str, &len, &cb_extra))
-        tgl_do_send_extf (TLS, str, len, py_str_cb, &cb_extra);
+        tgl_do_send_extf (TLS, str, len, py_str_cb, cb_extra);
+      else
+        PyErr_Print();
+      break;
+    case pq_import_chat_link:
+      if(PyArg_ParseTuple(args, "s#|O", &str, &len, &cb_extra))
+        tgl_do_import_chat_link  (TLS, str, len, py_empty_cb, cb_extra);
       else
         PyErr_Print();
       break;
@@ -1094,7 +1153,37 @@ PyObject* py_status_online(PyObject *self, PyObject *args) { return push_py_func
 PyObject* py_status_offline(PyObject *self, PyObject *args) { return push_py_func(pq_status_offline, args); }
 PyObject* py_send_location(PyObject *self, PyObject *args) { return push_py_func(pq_send_location, args); }
 PyObject* py_extf(PyObject *self, PyObject *args) { return push_py_func(pq_extf, args); }
+PyObject* py_import_chat_link(PyObject *self, PyObject *args) { return push_py_func(pq_import_chat_link, args); }
 
+extern int safe_quit;
+extern int exit_code;
+PyObject* py_safe_quit(PyObject *self, PyObject *args)
+{
+  int exit_val = 0;
+  if(PyArg_ParseTuple(args, "|i", &exit_val)) {
+    safe_quit = 1;
+    exit_code = exit_val;
+  } else {
+    PyErr_Print();
+  }
+
+  Py_RETURN_NONE;
+}
+
+PyObject* py_set_preview(PyObject *self, PyObject *args)
+{
+  int preview = 0;
+  if(PyArg_ParseTuple(args, "p", &preview)) {
+    if(preview)
+      TLS->disable_link_preview = 0;
+    else
+      TLS->disable_link_preview = 1;
+  } else {
+    PyErr_Print();
+  }
+
+  Py_RETURN_NONE;
+}
 
 // Store callables for python functions
 TGL_PYTHON_CALLBACK("on_binlog_replay_end", _py_binlog_end);
@@ -1104,6 +1193,7 @@ TGL_PYTHON_CALLBACK("on_msg_receive", _py_new_msg);
 TGL_PYTHON_CALLBACK("on_secret_chat_update", _py_secret_chat_update);
 TGL_PYTHON_CALLBACK("on_user_update", _py_user_update);
 TGL_PYTHON_CALLBACK("on_chat_update", _py_chat_update);
+TGL_PYTHON_CALLBACK("on_loop", _py_on_loop);
 
 static PyMethodDef py_tgl_methods[] = {
   {"get_contact_list", py_contact_list, METH_VARARGS, "retrieve contact list"},
@@ -1150,6 +1240,7 @@ static PyMethodDef py_tgl_methods[] = {
   {"status_offline", py_status_offline, METH_VARARGS, ""},
   {"send_location", py_send_location, METH_VARARGS, ""},  
   {"ext_function", py_extf, METH_VARARGS, ""},
+  {"import_chat_link", py_import_chat_link, METH_VARARGS, ""},
   {"set_on_binlog_replay_end", set_py_binlog_end, METH_VARARGS, ""},
   {"set_on_get_difference_end", set_py_diff_end, METH_VARARGS, ""},
   {"set_on_our_id", set_py_our_id, METH_VARARGS, ""},
@@ -1157,8 +1248,47 @@ static PyMethodDef py_tgl_methods[] = {
   {"set_on_secret_chat_update", set_py_secret_chat_update, METH_VARARGS, ""},
   {"set_on_user_update", set_py_user_update, METH_VARARGS, ""},
   {"set_on_chat_update", set_py_chat_update, METH_VARARGS, ""},
+  {"set_on_loop", set_py_on_loop, METH_VARARGS, ""},
+  {"set_link_preview", py_set_preview, METH_VARARGS, ""},
+  {"safe_quit", py_safe_quit, METH_VARARGS, ""},
+  {"safe_exit", py_safe_quit, METH_VARARGS, ""}, // Alias to safe_quit for naming consistancy in python.
   { NULL, NULL, 0, NULL }
 };
+
+void py_add_action_enums(PyObject *m)
+{
+  PyModule_AddIntConstant(m, "ACTION_NONE", tgl_message_action_none);
+  PyModule_AddIntConstant(m, "ACTION_GEO_CHAT_CREATE", tgl_message_action_geo_chat_create);
+  PyModule_AddIntConstant(m, "ACTION_GEO_CHAT_CHECKIN", tgl_message_action_geo_chat_checkin);
+  PyModule_AddIntConstant(m, "ACTION_CHAT_CREATE", tgl_message_action_chat_create);
+  PyModule_AddIntConstant(m, "ACTION_CHAT_EDIT_TITLE", tgl_message_action_chat_edit_title);
+  PyModule_AddIntConstant(m, "ACTION_CHAT_EDIT_PHOTO", tgl_message_action_chat_edit_photo);
+  PyModule_AddIntConstant(m, "ACTION_CHAT_DELETE_PHOTO", tgl_message_action_chat_delete_photo);
+  PyModule_AddIntConstant(m, "ACTION_CHAT_ADD_USER", tgl_message_action_chat_add_user);
+  PyModule_AddIntConstant(m, "ACTION_CHAT_ADD_USER_BY_LINK", tgl_message_action_chat_add_user_by_link);
+  PyModule_AddIntConstant(m, "ACTION_CHAT_DELETE_USER", tgl_message_action_chat_delete_user);
+  PyModule_AddIntConstant(m, "ACTION_SET_MESSAGE_TTL", tgl_message_action_set_message_ttl);
+  PyModule_AddIntConstant(m, "ACTION_READ_MESSAGES", tgl_message_action_read_messages);
+  PyModule_AddIntConstant(m, "ACTION_DELETE_MESSAGES", tgl_message_action_delete_messages);
+  PyModule_AddIntConstant(m, "ACTION_SCREENSHOT_MESSAGES", tgl_message_action_screenshot_messages);
+  PyModule_AddIntConstant(m, "ACTION_FLUSH_HISTORY", tgl_message_action_flush_history);
+  PyModule_AddIntConstant(m, "ACTION_RESEND", tgl_message_action_resend);
+  PyModule_AddIntConstant(m, "ACTION_NOTIFY_LAYER", tgl_message_action_notify_layer);
+  PyModule_AddIntConstant(m, "ACTION_TYPING", tgl_message_action_typing);
+  PyModule_AddIntConstant(m, "ACTION_NOOP", tgl_message_action_noop);
+  PyModule_AddIntConstant(m, "ACTION_COMMIT_KEY", tgl_message_action_commit_key);
+  PyModule_AddIntConstant(m, "ACTION_ABORT_KEY", tgl_message_action_abort_key);
+  PyModule_AddIntConstant(m, "ACTION_REQUEST_KEY", tgl_message_action_request_key);
+  PyModule_AddIntConstant(m, "ACTION_ACCEPT_KEY", tgl_message_action_accept_key);
+}
+
+void py_add_peer_type_enums(PyObject *m)
+{
+  PyModule_AddIntConstant(m, "PEER_USER", TGL_PEER_USER);
+  PyModule_AddIntConstant(m, "PEER_CHAT", TGL_PEER_CHAT);
+  PyModule_AddIntConstant(m, "PEER_ENCR_CHAT", TGL_PEER_ENCR_CHAT);
+}
+
 
 MOD_INIT(tgl)
 {
@@ -1168,6 +1298,9 @@ MOD_INIT(tgl)
 
   if (m == NULL)
     return MOD_ERROR_VAL;
+
+  py_add_action_enums(m);
+  py_add_peer_type_enums(m);
 
   if (PyType_Ready(&tgl_PeerType) < 0)
     return MOD_ERROR_VAL;
@@ -1196,14 +1329,6 @@ MOD_INIT(tgl)
   return MOD_SUCCESS_VAL(m);  
 }
 
-/*
-extern int safe_quit;
-static int safe_quit_from_py() {
-  Py_Finalize();
-  safe_quit = 1;
-  return 1;
-}
-*/
 
 void py_init (const char *file) {
   if (!file) { return; }

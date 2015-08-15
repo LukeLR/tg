@@ -57,16 +57,20 @@ void json_pack_user (json_t *res, tgl_peer_t *P) {
 void json_pack_chat (json_t *res, tgl_peer_t *P) {
   assert (P->chat.title);
   assert (json_object_set (res, "title", json_string (P->chat.title)) >= 0);
+  tgl_peer_id_t admin_id = TGL_MK_USER (P->chat.admin_id);
+  assert (json_object_set (res, "admin", json_pack_peer (admin_id)) >= 0);
   assert (json_object_set (res, "members_num", json_integer (P->chat.users_num)) >= 0);
-
   if (P->chat.user_list) {
     json_t *m = json_array ();
     assert (m);
 
     int i;
     for (i = 0; i < P->chat.users_num; i++) {
-      tgl_peer_id_t id = TGL_MK_USER (P->chat.user_list[i].user_id);
-      assert (json_array_append (m, json_pack_peer (id, tgl_peer_get (TLS, id))) >= 0);
+      tgl_peer_id_t user_id = TGL_MK_USER (P->chat.user_list[i].user_id);
+      tgl_peer_id_t inviter_id = TGL_MK_USER (P->chat.user_list[i].inviter_id);
+      json_t *peer = json_pack_peer (user_id);
+      assert (json_object_set (peer, "inviter", json_pack_peer (inviter_id)) >= 0);
+      assert (json_array_append (m, peer) >= 0);
     }
 
     assert (json_object_set (res, "members", m) >= 0);
@@ -75,10 +79,12 @@ void json_pack_chat (json_t *res, tgl_peer_t *P) {
 
 
 void json_pack_encr_chat (json_t *res, tgl_peer_t *P) {
-  assert (json_object_set (res, "user", json_pack_peer (TGL_MK_USER (P->encr_chat.user_id), tgl_peer_get (TLS, TGL_MK_USER (P->encr_chat.user_id)))) >= 0);
+  assert (json_object_set (res, "user", json_pack_peer (TGL_MK_USER (P->encr_chat.user_id))) >= 0);
 }
 
-json_t *json_pack_peer (tgl_peer_id_t id, tgl_peer_t *P) {
+json_t *json_pack_peer (tgl_peer_id_t id) {
+  tgl_peer_t *P = tgl_peer_get (TLS, id);
+  //assert (P);
   json_t *res = json_object ();
   assert (json_object_set (res, "id", json_integer (tgl_get_peer_id (id))) >= 0);
 
@@ -101,12 +107,15 @@ json_t *json_pack_peer (tgl_peer_id_t id, tgl_peer_t *P) {
     default:
       assert (0);
     }
-
+    
     assert (json_object_set (res, "print_name", json_string (s)) >= 0);
     return res;
   }
-  
-  assert (json_object_set (res, "print_name", json_string (P->print_name)) >= 0);
+  if(P->print_name != NULL){
+    assert (json_object_set (res, "print_name", json_string (P->print_name)) >= 0);
+  } else {
+    assert (json_object_set (res, "print_name", json_string ("")) >= 0);
+  }
   assert (json_object_set (res, "flags", json_integer (P->flags)) >= 0);
   
   switch (tgl_get_peer_type (id)) {
@@ -313,15 +322,15 @@ json_t *json_pack_service (struct tgl_message *M) {
     break;
   case tgl_message_action_chat_add_user:
     assert (json_object_set (res, "type", json_string ("chat_add_user")) >= 0);
-    assert (json_object_set (res, "user", json_pack_peer (tgl_set_peer_id (TGL_PEER_USER, M->action.user), tgl_peer_get (TLS, tgl_set_peer_id (TGL_PEER_USER, M->action.user)))) >= 0);
+    assert (json_object_set (res, "user", json_pack_peer (tgl_set_peer_id (TGL_PEER_USER, M->action.user))) >= 0);
     break;
   case tgl_message_action_chat_add_user_by_link:
     assert (json_object_set (res, "type", json_string ("chat_add_user_link")) >= 0);
-    assert (json_object_set (res, "user", json_pack_peer (tgl_set_peer_id (TGL_PEER_USER, M->action.user), tgl_peer_get (TLS, tgl_set_peer_id (TGL_PEER_USER, M->action.user)))) >= 0);
+    assert (json_object_set (res, "user", json_pack_peer (tgl_set_peer_id (TGL_PEER_USER, M->action.user))) >= 0);
     break;
   case tgl_message_action_chat_delete_user:
     assert (json_object_set (res, "type", json_string ("chat_del_user")) >= 0);
-    assert (json_object_set (res, "user", json_pack_peer (tgl_set_peer_id (TGL_PEER_USER, M->action.user), tgl_peer_get (TLS, tgl_set_peer_id (TGL_PEER_USER, M->action.user)))) >= 0);
+    assert (json_object_set (res, "user", json_pack_peer (tgl_set_peer_id (TGL_PEER_USER, M->action.user))) >= 0);
     break;
   case tgl_message_action_set_message_ttl:
     assert (json_object_set (res, "type", json_string ("set_ttl")) >= 0);
@@ -386,7 +395,7 @@ json_t *json_pack_message (struct tgl_message *M) {
   assert (json_object_set (res, "flags", json_integer (M->flags)) >= 0);
  
   if (tgl_get_peer_type (M->fwd_from_id)) {
-    assert (json_object_set (res, "fwd_from", json_pack_peer (M->fwd_from_id, tgl_peer_get (TLS, M->fwd_from_id))) >= 0);
+    assert (json_object_set (res, "fwd_from", json_pack_peer (M->fwd_from_id)) >= 0);
     assert (json_object_set (res, "fwd_date", json_integer (M->fwd_date)) >= 0);
   }
 
@@ -398,8 +407,8 @@ json_t *json_pack_message (struct tgl_message *M) {
     assert (json_object_set (res, "mention", json_true ()) >= 0);
   }
  
-  assert (json_object_set (res, "from", json_pack_peer (M->from_id, tgl_peer_get (TLS, M->from_id))) >= 0);
-  assert (json_object_set (res, "to", json_pack_peer (M->to_id, tgl_peer_get (TLS, M->to_id))) >= 0);
+  assert (json_object_set (res, "from", json_pack_peer (M->from_id)) >= 0);
+  assert (json_object_set (res, "to", json_pack_peer (M->to_id)) >= 0);
   
   assert (json_object_set (res, "out", json_boolean (M->flags & TGLMF_OUT)) >= 0);
   assert (json_object_set (res, "unread", json_boolean (M->flags & TGLMF_UNREAD)) >= 0);
@@ -435,11 +444,8 @@ int str_format_time(long when, char* string)
 
 json_t *json_pack_user_status (struct tgl_user *U) {
   json_t *res = json_object ();
+  assert (json_object_set (res, "user",  json_pack_peer (U->id)) >= 0);
   struct tgl_user_status *S = &U->status;
-  json_object ();
-  json_t *user_res = json_object ();
-  json_pack_user(user_res, (void *) U);
-  assert (json_object_set (res, "user",  user_res) >= 0);
   assert (json_object_set (res, "online", json_boolean (S->online == 1)) >= 0);
   assert (json_object_set (res, "state", json_integer (S->online)) >= 0);
   if (S->online > 0 || S->online == -1) {

@@ -100,6 +100,7 @@
   "# This is an empty config file\n" \
   "# Feel free to put something here\n"
 
+int bot_mode;
 int verbosity;
 int msg_num_mode;
 char *default_username;
@@ -127,6 +128,7 @@ int ipv6_enabled;
 char *start_command;
 int disable_link_preview;
 int enable_json;
+int exit_code;
 
 struct tgl_state *TLS;
 
@@ -491,6 +493,7 @@ void usage (void) {
   printf ("  --help/-h                            prints this help\n");
   printf ("  --accept-any-tcp                     accepts tcp connections from any src (only loopback by default)\n");
   printf ("  --disable-link-preview               disables server-side previews to links\n");
+  printf ("  --bot/-b                             bot mode\n");  
   #ifdef USE_JSON
   printf ("  --json                               prints answers and values in json format\n");
   #endif
@@ -554,6 +557,7 @@ static void sighup_handler (const int sig) {
 char *set_user_name;
 char *set_group_name;
 int accept_any_tcp;
+char *bot_hash;
 
 int change_user_group () {
   char *username = set_user_name;
@@ -639,6 +643,7 @@ void args_parse (int argc, char **argv) {
     {"exec", required_argument, 0, 'e'},
     {"disable-names", no_argument, 0, 'I'},
     {"enable-ipv6", no_argument, 0, '6'},
+    {"bot", optional_argument, 0, 'b'},
     {"help", no_argument, 0, 'h'},
     {"accept-any-tcp", no_argument, 0,  1001},
     {"disable-link-preview", no_argument, 0, 1002},
@@ -650,7 +655,7 @@ void args_parse (int argc, char **argv) {
 
 
   int opt = 0;
-  while ((opt = getopt_long (argc, argv, "u:hk:vNl:fEwWCRdL:DU:G:qP:S:e:I6"
+  while ((opt = getopt_long (argc, argv, "u:hk:vNl:fEwWCRdL:DU:G:qP:S:e:I6b"
 #ifdef HAVE_LIBCONFIG
   "c:p:"
 #else
@@ -666,6 +671,12 @@ void args_parse (int argc, char **argv) {
   
   )) != -1) {
     switch (opt) {
+    case 'b':
+      bot_mode ++;
+      if (optarg) {
+        bot_hash = optarg;
+      }
+      break;
     case 1000:
       tgl_allocator = &tgl_allocator_debug;
       break;
@@ -827,13 +838,14 @@ void sig_term_handler (int signum __attribute__ ((unused))) {
   if (write (1, "SIGTERM/SIGINT received\n", 25) < 0) { 
     // Sad thing
   }
-  if (TLS && TLS->ev_base) {
-    event_base_loopbreak (TLS->ev_base);
-  }
+  //if (TLS && TLS->ev_base) {
+  //  event_base_loopbreak (TLS->ev_base);
+  //}
   sigterm_cnt ++;
 }
 
 void do_halt (int error) {
+  int retval;
   if (daemonize) {
     return;
   }
@@ -857,8 +869,14 @@ void do_halt (int error) {
   if (sfd > 0) {
     close (sfd);
   }
-  
-  exit (error ? EXIT_FAILURE : EXIT_SUCCESS);
+ 
+  if (exit_code) {
+    retval = exit_code;
+  } else {
+    retval = error ? EXIT_FAILURE : EXIT_SUCCESS;
+  }
+
+  exit (retval);
 }
 
 int main (int argc, char **argv) {
@@ -884,13 +902,17 @@ int main (int argc, char **argv) {
 
   if (port > 0) {
     struct sockaddr_in serv_addr;
-
+    int yes = 1;
     sfd = socket (AF_INET, SOCK_STREAM, 0);
     if (sfd < 0) {
       perror ("socket");
       exit(1);
     }
 
+    if(setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) < 0) {
+      perror("setsockopt");
+      exit(1);
+    }
     memset (&serv_addr, 0, sizeof (serv_addr));
     
     serv_addr.sin_family = AF_INET;
@@ -921,7 +943,7 @@ int main (int argc, char **argv) {
     
     serv_addr.sun_family = AF_UNIX;
 
-    snprintf (serv_addr.sun_path, 108, "%s", unix_socket);
+    snprintf (serv_addr.sun_path, sizeof(serv_addr.sun_path), "%s", unix_socket);
  
     if (bind (usfd, (struct sockaddr *) &serv_addr, sizeof (serv_addr)) < 0) {
       perror ("bind");
@@ -946,6 +968,8 @@ int main (int argc, char **argv) {
       "This is free software, and you are welcome to redistribute it\n"
       "under certain conditions; type `show_license' for details.\n"
       "Telegram-cli uses libtgl version " TGL_VERSION "\n"
+      "Telegram-cli includes software developed by the OpenSSL Project\n"
+      "for use in the OpenSSL Toolkit. (http://www.openssl.org/)\n"
 #ifdef USE_PYTHON
       "Telegram-cli uses libpython version " PY_VERSION "\n"
 #endif

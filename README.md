@@ -43,7 +43,11 @@ On gentoo:
 
 On Fedora:
 
-     sudo yum install lua-devel openssl-devel libconfig-devel readline-devel libevent-devel libjansson-devel python-devel
+     sudo dnf install lua-devel openssl-devel libconfig-devel readline-devel libevent-devel libjansson-devel python-devel
+
+On Archlinux:
+
+     yaourt -S telegram-git
 
 On FreeBSD:
 
@@ -52,6 +56,10 @@ On FreeBSD:
 On OpenBSD:
 
      pkg_add libconfig libexecinfo lua python
+
+On openSUSE:
+
+     sudo zypper in lua-devel libconfig-devel readline-devel libevent-devel libjansson-devel python-devel libopenssl-devel
 
 Then,
 
@@ -70,11 +78,7 @@ The client depends on [readline library](http://cnswww.cns.cwru.edu/php/chet/rea
 
 If using [Homebrew](http://brew.sh/):
 
-     brew install libconfig
-     brew install readline
-     brew install lua
-     brew install python
-     brew install libevent
+     brew install libconfig readline lua python libevent jansson
      export CFLAGS="-I/usr/local/include -I/usr/local/Cellar/readline/6.3.8/include"
      export LDFLAGS="-L/usr/local/lib -L/usr/local/Cellar/readline/6.3.8/lib"
      ./configure && make
@@ -183,6 +187,7 @@ If two or more peers have same name, <sharp>number is appended to the name. (for
 * **stats** - just for debugging
 * **show_license** - prints contents of GPLv2
 * **help** - prints this help
+* **get_self** - get our user info
 
 #### Card
 * **export_card** - print your 'card' that anyone can later use to import your contact
